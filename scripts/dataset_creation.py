@@ -15,9 +15,30 @@ import accelerate
 from collections import defaultdict
 from PIL import Image
 
+# Suppress external library logs
+logging.getLogger('requests').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('transformers').setLevel(logging.WARNING)
+
 # Set up logging
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# File handler with UTF-8
+try:
+    file_handler = logging.FileHandler('run.log', mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+except Exception as e:
+    logger.error(f"Failed to open run.log: {e}", exc_info=True)
 
 def log_memory_usage():
     """Log current memory usage."""
@@ -130,7 +151,7 @@ def annotate_images(image_dir, captions_file, output_dir, min_obj_size=30, max_o
                 logger.info(f"Skipping image {img_path.name}: invalid size ({w}x{h})")
                 continue
         
-            # Florence-2 inference for object detection
+            # Florence-2 inference
             logger.debug(f"Preparing inputs for {img_path.name}")
             task_prompt = "<OD>"
             inputs = processor(text=task_prompt, images=img, return_tensors="pt")
@@ -151,7 +172,7 @@ def annotate_images(image_dir, captions_file, output_dir, min_obj_size=30, max_o
                 task=task_prompt,
                 image_size=(w, h)
             )
-            logger.debug(f"Raw predictions for {img_path.name}: {predictions}")
+            logger.debug(f"Raw predictions: {predictions}")
             
             bboxes = predictions.get("<OD>", {}).get("bboxes", [])
             labels = predictions.get("<OD>", {}).get("labels", [])
@@ -168,6 +189,7 @@ def annotate_images(image_dir, captions_file, output_dir, min_obj_size=30, max_o
                     cls = "pet"
                 else:
                     continue
+                logger.debug(f"Processing bbox for label {label}: {bbox}")
                 x, y, x2, y2 = bbox
                 width, height = x2 - x, y2 - y
                 if min_obj_size <= width <= max_obj_size and min_obj_size <= height <= max_obj_size:
@@ -192,20 +214,23 @@ def annotate_images(image_dir, captions_file, output_dir, min_obj_size=30, max_o
     
     logger.info(f"Completed annotation: {len(annotations)} images annotated")
     logger.info(f"Image size distribution: {dict(size_counts)}")
-    logger.info(f"All detected labels: {sorted(all_labels)}")
+    logger.debug(f"All detected labels: {sorted(all_labels)}")
     return annotations
 
 def save_yolo_annotation(img_path, bboxes, output_dir):
     """Save bounding boxes in YOLO format."""
     img = cv2.imread(str(img_path))
+    if img is None:
+        logger.error(f"Failed to read image {img_path}")
+        return
     h, w = img.shape[:2]
     txt_path = output_dir / f"{img_path.stem}.txt"
-    with open(txt_path, "w") as f:
+    with open(txt_path, "w", encoding="utf-8") as f:
         for box in bboxes:
             cls = 0 if box["class"] == "person" else 1  # person: 0, pet: 1
             x_center, y_center = box["x"] / w, box["y"] / h
             width, height = box["width"] / w, box["height"] / h
-            f.write(f"{cls} {x_center} {y_center} {width} {height}\n")
+            f.write(f"{cls} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
 
 def split_dataset(annotations, output_dir):
     """Split into train (up to 500) and val (up to 100) sets per class."""
@@ -227,8 +252,8 @@ def split_dataset(annotations, output_dir):
                 split_dir.mkdir(exist_ok=True)
                 for ann in split:
                     img_path = ann["image"]
-                    shutil.copy(img_path, split_dir)
-                    shutil.copy(output_dir / f"{img_path.stem}.txt", split_dir)
+                    shutil.copy(img_path, split_dir / img_path.name)
+                    shutil.copy(output_dir / f"{img_path.stem}.txt", split_dir / f"{img_path.stem}.txt")
                 logger.info(f"Copied {len(split)} images to {split_dir}")
     except Exception as e:
         logger.error(f"Error splitting dataset: {e}", exc_info=True)
@@ -249,12 +274,12 @@ def test_dataset_creation(dataset_dir, output_dir):
         return False
 
 if __name__ == "__main__":
-    logger.debug("Script started")
+    logger.debug("Starting script execution")
     dataset_dir = Path("C:/School/Afeka/computer vision/final project/flickr30k_images")
     output_dir = Path("C:/School/Afeka/computer vision/final project/dataset")
     output_dir.mkdir(exist_ok=True)
     log_memory_usage()
     if test_dataset_creation(dataset_dir, output_dir):
-        logger.info("Dataset creation complete")
+        logger.info("Dataset creation completed")
     else:
         logger.error("Dataset creation failed")
